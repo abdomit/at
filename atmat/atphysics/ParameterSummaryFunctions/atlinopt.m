@@ -96,12 +96,10 @@ else
   end
   
   if isfield(intwi,'mu')
-    mxi = intwi(end).mu(1);
-    myi = intwi(end).mu(2);
     %Quick fix: set arbitrary phase to allow beta and alpha to be calculated
     %from matrix, avoid coupling resonance
-    if mxi == 0,mxi=pi/4;end
-    if myi == 0,myi=pi/3;end
+    mxi=pi/4;
+    myi=pi/3;
   else
     error('inttwi structure does not have field ''mu''');
   end   
