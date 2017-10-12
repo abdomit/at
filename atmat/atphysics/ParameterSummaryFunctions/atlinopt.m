@@ -1,4 +1,4 @@
-function [lindata, varargout] = atlinopt(RING,DP,varargin)
+function [lindata, varargout] = myatlinopt(RING,DP,varargin)
 %ATLINOPT			performs linear analysis of the COUPLED lattices
 %
 % LinData = ATLINOPT(RING,DP,REFPTS) is a MATLAB structure array with fields
@@ -50,6 +50,8 @@ function [lindata, varargout] = atlinopt(RING,DP,varargin)
 
 global NUMDIFPARAMS
 
+[intwi,varargin]=getoption(varargin,'inputtwiss',[]);
+
 NE = length(RING);
 if nargin >= 3
     if islogical(varargin{1})
@@ -70,26 +72,73 @@ else
 end
 
 spos = findspos(RING,REFPTS);
-[M44, MS, orb] = findm44(RING,DP,REFPTS,varargin{2:end});
 
-% Calculate A,B,C, gamma at the first element
-M =M44(1:2,1:2);
-N =M44(3:4,3:4);
-m =M44(1:2,3:4);
-n =M44(3:4,1:2);
+if isempty(intwi)  
+  % Calculate A,B,C, gamma at the first element
+  [M44, MS, orb] = findm44(RING,DP,REFPTS,varargin{2:end});
+  M =M44(1:2,1:2);
+  N =M44(3:4,3:4);
+  m =M44(1:2,3:4);
+  n =M44(3:4,1:2);
+else
+  if isfield(intwi,'alpha')
+    axi = intwi(end).alpha(1);
+    ayi = intwi(end).alpha(2);
+  else
+    error('inttwi structure does not have field ''alpha''');
+  end
+
+  if isfield(intwi,'beta')
+    bxi = intwi(end).beta(1);
+    byi = intwi(end).beta(2);
+  else
+    error('inttwi structure does not have field ''beta''');
+  end
+  
+  if isfield(intwi,'mu')
+    mxi = intwi(end).mu(1);
+    myi = intwi(end).mu(2);
+    %Quick fix: set arbitrary phase to allow beta and alpha to be calculated
+    %from matrix, avoid coupling resonance
+    if mxi == 0,mxi=pi/4;end
+    if myi == 0,myi=pi/3;end
+  else
+    error('inttwi structure does not have field ''mu''');
+  end   
+  
+  if isfield(intwi,'Dispersion')
+    dispi = intwi(end).Dispersion;
+  else
+    error('inttwi structure does not have field ''Dispersion''');
+  end 
+  
+  if isfield(intwi,'ClosedOrbit')
+    coi = intwi(end).ClosedOrbit;
+  else
+    error('inttwi structure does not have field ''ClosedOrbit''');
+  end 
+  
+  R0 = [coi+dispi*DP;DP;0];
+  [~,MS,orb] = findm44(RING,DP,REFPTS,R0);  
+  M =[cos(mxi)+axi*sin(mxi) bxi*sin(mxi); -(1+axi^2)/bxi*sin(mxi) cos(mxi)-axi*sin(mxi)];
+  N =[cos(myi)+ayi*sin(myi) byi*sin(myi); -(1+ayi^2)/byi*sin(myi) cos(myi)-ayi*sin(myi)];
+  m =zeros(2,2);
+  n =zeros(2,2);
+end
+
 
 % 2-by-2 symplectic matrix
 S = [0 1; -1 0];
 H = m + S*n'*S';
 t = trace(M-N);
 
-g = sqrt(1 + sqrt(t*t/(t*t+4*det(H))))/sqrt(2);
+g = sqrt(1 + sqrt(t*t/(t*t+4*det(H))))/sqrt(2);  
 G = diag([g g]);
 C = -H*sign(t)/(g*sqrt(t*t+4*det(H)));
 A = G*G*M  -  G*(m*S*C'*S' + C*n) + C*N*S*C'*S';
 B = G*G*N  +  G*(S*C'*S'*m + n*C) + S*C'*S'*M*C;
-[MSA,MSB,gamma,CL,AL,BL]=cellfun(@analyze,num2cell(MS,[1 2]),'UniformOutput',false);
 
+[MSA,MSB,gamma,CL,AL,BL]=cellfun(@analyze,num2cell(MS,[1 2]),'UniformOutput',false);
 
 [BX,AX,MX]=lop(reshape(cat(3,MSA{:}),2,2,[]),A);
 [BY,AY,MY]=lop(reshape(cat(3,MSB{:}),2,2,[]),B);
@@ -97,12 +146,8 @@ B = G*G*N  +  G*(S*C'*S'*m + n*C) + S*C'*S'*M*C;
 %tunes = [MX(end),MY(end)]/2/pi;
 
 if nargout >= 2
-    cos_mu_x = trace(A)/2;
-    cos_mu_y = trace(B)/2;
-    tns = acos([cos_mu_x cos_mu_y])/2/pi;
-    if A(1,2) < 0, tns(1)=1-tns(1); end
-    if B(1,2) < 0, tns(2)=1-tns(2); end
-    varargout{1}=tns;
+   tns = gettunes(A,B);
+   varargout{1}=tns;
 end
 
 dispargs={};
@@ -113,14 +158,27 @@ if nargout >= 3
         dDP =  1e-6;
     end
     refs=false(1,length(RING)+1);
-    % Calculate tunes for DP+dDP
-    [orbP,o1P]=findorbit4(RING,DP+0.5*dDP,REFPTS);
-    [orbM,o1M]=findorbit4(RING,DP-0.5*dDP,REFPTS);
-    dispersion = (orbP-orbM)/dDP;
-    [LD, tunesP] = atlinopt(RING,DP+0.5*dDP,refs,o1P); %#ok<ASGLU>
-    [LD, tunesM] = atlinopt(RING,DP-0.5*dDP,refs,o1M); %#ok<ASGLU>
-    varargout{2} = (tunesP - tunesM)/dDP;
-    dispargs={'Dispersion',num2cell(dispersion,1)'};
+    if isempty(intwi)
+      % Calculate tunes for DP+dDP
+      [orbP,o1P]=findorbit4(RING,DP+0.5*dDP,REFPTS);
+      [orbM,o1M]=findorbit4(RING,DP-0.5*dDP,REFPTS);
+      dispersion = (orbP-orbM)/dDP;
+      [LD, tunesP] = myatlinopt(RING,DP+0.5*dDP,refs,o1P); %#ok<ASGLU>
+      [LD, tunesM] = myatlinopt(RING,DP-0.5*dDP,refs,o1M); %#ok<ASGLU>
+      varargout{2} = (tunesP - tunesM)/dDP;
+      dispargs={'Dispersion',num2cell(dispersion,1)'};
+    else     
+      RP = [coi+dispi*(DP+0.5*dDP);DP+0.5*dDP;0];  
+      orbP = linepass(RING,RP,REFPTS);
+      RM = [coi+dispi*(DP-0.5*dDP);DP-0.5*dDP;0];   
+      orbM = linepass(RING,RM,REFPTS);
+      dispersion = (orbP(1:4,:)-orbM(1:4,:))/dDP;
+      dispargs={'Dispersion',num2cell(dispersion,1)'};
+      inds = find(REFPTS);
+      [LD, tunesP] = myatlinopt(RING,DP+0.5*dDP,inds(end),'inputtwiss',intwi); %#ok<ASGLU>
+      [LD, tunesM] = myatlinopt(RING,DP-0.5*dDP,inds(end),'inputtwiss',intwi); %#ok<ASGLU>
+      varargout{2} = (tunesP - tunesM)/dDP;
+    end
 end
 ld = struct('ElemIndex',num2cell(find(REFPTS)),...
     'SPos',num2cell(spos)',...
@@ -178,6 +236,14 @@ lindata=reshape(ld(isel),size(isel));
             phase=NaN(size(beta));
         end
         phase = BetatronPhaseUnwrap(phase);
+    end
+
+    function [tns]=gettunes(A,B)
+        cos_mu_x = trace(A)/2;
+        cos_mu_y = trace(B)/2;
+        tns = acos([cos_mu_x cos_mu_y])/2/pi;
+        if A(1,2) < 0, tns(1)=1-tns(1); end
+        if B(1,2) < 0, tns(2)=1-tns(2); end
     end
 
 end
