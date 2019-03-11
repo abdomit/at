@@ -2,9 +2,11 @@
 import sys
 import copy
 import numpy
+import fnmatch
 from scipy.constants import physical_constants as cst
 from warnings import warn
-from at.lattice import elements, get_s_pos, checktype, uint32_refpts
+from at.lattice import elements, get_s_pos, checktype, uint32_refpts, \
+    refpts_iterator
 from at.lattice import AtWarning, AtError
 from at.physics import find_orbit4, find_orbit6, find_sync_orbit, find_m44
 from at.physics import find_m66, linopt, ohmi_envelope, get_mcf
@@ -151,6 +153,11 @@ class Lattice(list):
             setattr(self, key, value)
 
     def __getitem__(self, key):
+        if isinstance(key, str):
+            f = lambda el:fnmatch.fnmatch(el.FamName, key)
+            refpts = numpy.fromiter(map(f, self), dtype=bool)
+            elems = refpts_iterator(self, refpts)
+            return list(elems)
         try:
             return super(Lattice, self).__getitem__(key)
         except TypeError:
